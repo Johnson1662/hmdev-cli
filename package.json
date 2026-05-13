@@ -1,6 +1,6 @@
 {
   "name": "huawei-docs-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "华为 HarmonyOS 开发文档 CLI & MCP Server — 一行命令搜索、获取华为开发者文档，无需克隆仓库",
   "keywords": [
     "huawei",
@@ -25,8 +25,8 @@
     "url": "git+https://github.com/Johnson1662/huawei-docs-mcp.git"
   },
   "bin": {
-    "huawei-docs": "./bin/huawei-docs.js",
-    "huawei-docs-mcp": "./bin/huawei-docs-mcp.js"
+    "huawei-docs": "bin/huawei-docs.js",
+    "huawei-docs-mcp": "bin/huawei-docs-mcp.js"
   },
   "engines": {
     "node": ">=16.0.0"
