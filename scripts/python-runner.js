@@ -49,17 +49,18 @@ function findSystemPython() {
     : ['python3', 'python'];
 
   for (const cmd of candidates) {
+    const env = { ...process.env, PYTHONHOME: '' };
     try {
       const out = execSync(
         `"${cmd}" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')"`,
-        { encoding: 'utf-8', timeout: 10000 }
+        { encoding: 'utf-8', timeout: 10000, env }
       ).trim();
       const [major, minor] = out.split('.').map(Number);
       if (major >= 3 && minor >= 10) {
         // Resolve full path
         const which = execSync(
           os.platform() === 'win32' ? `where "${cmd}"` : `which "${cmd}"`,
-          { encoding: 'utf-8', timeout: 5000 }
+          { encoding: 'utf-8', timeout: 5000, env }
         ).trim().split('\n')[0];
         return which || cmd;
       }
@@ -101,12 +102,16 @@ async function ensurePython() {
     );
   }
 
+  // 干净的 env，避免 PYTHONHOME 污染
+  const cleanEnv = { ...process.env, PYTHONHOME: '' };
+
   console.error('[huawei-docs] 首次运行：正在准备 Python 环境...');
 
   // 创建虚拟环境
   execSync(`"${systemPy}" -m venv "${VENV_DIR}"`, {
     stdio: 'pipe',
     timeout: 60000,
+    env: cleanEnv,
   });
   console.error('[huawei-docs] ✓ 虚拟环境已创建');
 
@@ -115,6 +120,7 @@ async function ensurePython() {
     execSync(`"${getVenvPip()}" install --upgrade pip`, {
       stdio: 'pipe',
       timeout: 60000,
+      env: cleanEnv,
     });
   } catch { /* 非致命 */ }
 
@@ -123,6 +129,7 @@ async function ensurePython() {
   execSync(`"${getVenvPip()}" install mcp httpx`, {
     stdio: 'pipe',
     timeout: 120000,
+    env: cleanEnv,
   });
   console.error('[huawei-docs] ✓ 依赖安装完成');
 

@@ -39,7 +39,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node scripts/python-runner.js",
-    "prepublishOnly": "node -e \"require('./scripts/python-runner').ensurePython()\""
+    "postinstall": "node scripts/python-runner.js"
   }
 }
