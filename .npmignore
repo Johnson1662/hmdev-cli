@@ -1,0 +1,7 @@
+python/.venv/
+__pycache__/
+*.pyc
+node_modules/
+.git/
+.github/
+hmdev-cli-skill/

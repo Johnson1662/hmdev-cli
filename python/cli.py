@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
 """
-Huawei HarmonyOS Developer Docs — CLI & MCP Server
+hmdev-cli — HarmonyOS 开发 CLI 工具
 
-双模式工具（通过 npm 包 huawei-docs-mcp 安装）：
-  huawei-docs index              查看文档索引
-  huawei-docs search <关键词>      搜索文档
-  huawei-docs get <URL>          获取文档内容
-  huawei-docs category <分类>     查看分类下的文档
-  huawei-docs mcp                启动 MCP 服务器（默认）
-
-安装方式（无需克隆仓库）：
-  npm install -g huawei-docs-mcp
-
-Uses Huawei's official internal REST APIs (reverse-engineered from the SPA):
-  - getDocumentById: fetch doc content by slug + catalog
-  - getCatalogTree: fetch navigation tree
-  - getNavigationAddress: fetch breadcrumb/nav info
-
-No Playwright or browser needed — works with plain httpx.
+Usage:
+  hmdev-cli index              查看文档索引
+  hmdev-cli search <关键词>     搜索文档
+  hmdev-cli get <URL>         获取文档内容
+  hmdev-cli category <分类>    查看分类文档
+  hmdev-cli build             构建 HAP
+  hmdev-cli deploy            部署到设备
+  hmdev-cli devices           列出设备
+  hmdev-cli run               启动应用
 """
 
 import asyncio
 import json
 import re
-import sys
+import subprocess
 import time
 from argparse import ArgumentParser, RawDescriptionHelpFormatter, SUPPRESS
-from typing import Any, Optional
 from html.parser import HTMLParser
+from typing import Any
 
 import httpx
-from mcp.server import Server
-from mcp.server.models import InitializationOptions
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+
+from builder import HvigorTool, HDCTool
+from config import Config
 
 # ── API Configuration ─────────────────────────────────────────────────────────
 API_BASE = "https://svc-drcn.developer.huawei.com/community/servlet/consumer/cn/documentPortal"
@@ -144,7 +136,6 @@ class HTMLToText(HTMLParser):
 
 
 def html_to_text(html: str) -> str:
-    """Convert HTML content to clean plain text."""
     if not html:
         return ""
     parser = HTMLToText()
@@ -157,7 +148,6 @@ def html_to_text(html: str) -> str:
 # ── API Functions ──────────────────────────────────────────────────────────────
 
 async def fetch_doc(object_id: str, catalog_name: str, language: str = "cn") -> dict:
-    """Fetch document content via getDocumentById API."""
     client = get_client()
     resp = await client.post(
         f"{API_BASE}/getDocumentById",
@@ -169,46 +159,30 @@ async def fetch_doc(object_id: str, catalog_name: str, language: str = "cn") -> 
         },
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data
+    return resp.json()
 
 
 async def fetch_catalog_tree(catalog_name: str, object_id: str = "", language: str = "cn") -> dict:
-    """Fetch navigation tree via getCatalogTree API."""
     client = get_client()
-    payload = {
-        "language": language,
-        "catalogName": catalog_name,
-    }
+    payload = {"language": language, "catalogName": catalog_name}
     if object_id:
         payload["objectId"] = object_id
-
-    resp = await client.post(
-        f"{API_BASE}/getCatalogTree",
-        json=payload,
-    )
+    resp = await client.post(f"{API_BASE}/getCatalogTree", json=payload)
     resp.raise_for_status()
-    data = resp.json()
-    return data
+    return resp.json()
 
 
 async def fetch_navigation_address(catalog_name: str, language: str = "cn") -> dict:
-    """Fetch navigation address via getNavigationAddress API."""
     client = get_client()
     resp = await client.post(
         f"{API_BASE}/getNavigationAddress",
-        json={
-            "catalogName": catalog_name,
-            "lang": language,
-        },
+        json={"catalogName": catalog_name, "lang": language},
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data
+    return resp.json()
 
 
 def extract_nav_tree(tree_data: dict) -> list[dict]:
-    """Extract navigable links from the catalog tree response."""
     pages = []
     value = tree_data.get("value", {})
     catalog_name = value.get("catalogName", "")
@@ -245,7 +219,6 @@ def extract_nav_tree(tree_data: dict) -> list[dict]:
 
 
 def extract_doc_content(api_response: dict) -> dict:
-    """Extract structured doc content from the API response."""
     value = api_response.get("value", {})
     title = value.get("title", "未知标题")
     content_raw = (value.get("content") or {}).get("content", "")
@@ -283,7 +256,6 @@ _CACHE_TTL = 600  # 10 minutes
 
 
 async def build_index() -> dict[str, Any]:
-    """Build a complete index of all docs by fetching catalog trees."""
     global _index_cache, _index_cache_ts
     now = time.time()
     if _index_cache and (now - _index_cache_ts) < _CACHE_TTL:
@@ -321,70 +293,9 @@ async def build_index() -> dict[str, Any]:
     return result
 
 
-# ── MCP Server ────────────────────────────────────────────────────────────────
-server = Server("huawei-docs")
-
-
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="get_index",
-            description="获取华为HarmonyOS开发文档的完整目录索引，包含所有分类及其文档列表。数据来自官方API，实时准确。",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="search_docs",
-            description="在华为HarmonyOS开发文档中搜索相关页面。通过分类目录和文档标题进行匹配。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索关键词（如 'ArkUI', 'Ability Kit', '数据管理', '分布式' 等）",
-                    }
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="get_page",
-            description="获取某篇华为HarmonyOS开发文档的完整内容。通过URL来获取。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "文档页面的URL（如 https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkui-overview）",
-                    }
-                },
-                "required": ["url"],
-            },
-        ),
-        Tool(
-            name="get_category",
-            description="获取指定分类下的所有文档。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "catalog": {
-                        "type": "string",
-                        "description": "分类名称：开发指南(harmonyos-guides)、API参考(harmonyos-references)、最佳实践(best-practices)、FAQ(harmonyos-faqs)、版本说明(harmonyos-releases)",
-                    }
-                },
-                "required": ["catalog"],
-            },
-        ),
-        Tool(
-            name="refresh_index",
-            description="强制刷新文档索引缓存，重新从官方API获取最新数据。",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-    ]
-
+# ── CLI Helpers ────────────────────────────────────────────────────────────────
 
 def parse_doc_url(url: str) -> tuple[str, str]:
-    """Parse a doc URL into (catalog_name, object_id)."""
     url = url.split("?")[0].rstrip("/")
     for catalog in CATALOGS:
         pattern = f"/{catalog}/"
@@ -400,144 +311,13 @@ def parse_doc_url(url: str) -> tuple[str, str]:
     return "harmonyos-guides", object_id
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    try:
-        if name == "get_index":
-            index = await build_index()
-            lines = [
-                f"# 华为HarmonyOS开发文档索引",
-                f"来源：华为官方API（实时获取）",
-                f"更新时间：{index.get('last_updated', 'N/A')}",
-                f"总计 {index['total_pages']} 篇文档",
-                "",
-            ]
-            for cat_name, cat_info in index.get("catalogs", {}).items():
-                label = cat_info.get("label", cat_name)
-                count = cat_info.get("count", 0)
-                lines.append(f"## {label} ({count}篇) — `{cat_name}`")
-                for page in cat_info.get("first_10", []):
-                    lines.append(f"- [{page['title'][:70]}]({page['url']})")
-                if count > 10:
-                    lines.append(f"  … 及 {count-10} 篇更多文档")
-                lines.append("")
-            return [TextContent(type="text", text="\n".join(lines))]
-
-        elif name == "search_docs":
-            query = arguments.get("query", "")
-            if not query:
-                return [TextContent(type="text", text="请提供搜索关键词。")]
-
-            index = await build_index()
-            query_lower = query.lower()
-            results = []
-            seen = set()
-
-            for page in index.get("all_pages", []):
-                title = page.get("title", "").lower()
-                obj_id = page.get("object_id", "").lower()
-                if query_lower in title or query_lower in obj_id or query_lower in page.get("catalog_name", ""):
-                    if page.get("url") not in seen:
-                        seen.add(page["url"])
-                        results.append(page)
-
-            if not results:
-                return [TextContent(
-                    type="text",
-                    text=f"未找到与 '{query}' 相关的文档。\n\n"
-                         f"提示：可用的分类有 开发指南(harmonyos-guides)、API参考(harmonyos-references)、"
-                         f"最佳实践(best-practices)、FAQ(harmonyos-faqs)、版本说明(harmonyos-releases)。\n"
-                         f"尝试用 get_index 查看所有文档。",
-                )]
-
-            lines = [f"# 搜索结果：'{query}'", f"找到 {len(results)} 篇相关文档\n"]
-            for page in results[:30]:
-                catalog_label = CATALOGS.get(page.get("catalog_name", ""), page.get("catalog_name", ""))
-                lines.append(f"- [{page['title'][:70]}]({page['url']}) [{catalog_label}]")
-            if len(results) > 30:
-                lines.append(f"\n...及另外 {len(results) - 30} 篇相关文档")
-
-            return [TextContent(type="text", text="\n".join(lines))]
-
-        elif name == "get_page":
-            url = arguments.get("url", "")
-            if not url:
-                return [TextContent(type="text", text="请提供文档URL。")]
-            catalog, object_id = parse_doc_url(url)
-            doc = await fetch_doc(object_id=object_id, catalog_name=catalog)
-            content = extract_doc_content(doc)
-            lines = [
-                f"# {content['title']}",
-                f"来源：{url}",
-                f"分类：{CATALOGS.get(catalog, catalog)}",
-                "",
-                content["content"][:12000],
-            ]
-            if len(content["content"]) > 12000:
-                lines.append("\n[内容已截断]")
-            return [TextContent(type="text", text="\n".join(lines))]
-
-        elif name == "get_category":
-            catalog = arguments.get("catalog", "")
-            if not catalog:
-                available = "\n".join(f"- {v} ({k})" for k, v in CATALOGS.items())
-                return [TextContent(type="text", text=f"请指定分类名称。可用分类：\n{available}")]
-
-            catalog_key = None
-            for k, v in CATALOGS.items():
-                if catalog == k or catalog == v or catalog in k or catalog in v:
-                    catalog_key = k
-                    break
-            if not catalog_key:
-                return [TextContent(type="text", text=f"未知分类 '{catalog}'。可用分类：\n" + "\n".join(f"- {v} ({k})" for k, v in CATALOGS.items()))]
-
-            tree = await fetch_catalog_tree(catalog_key)
-            pages = extract_nav_tree(tree)
-            label = CATALOGS[catalog_key]
-
-            lines = [f"# {label} — `{catalog_key}`", f"共 {len(pages)} 篇文档\n"]
-            for page in pages:
-                indent = "  " * page.get("depth", 0)
-                lines.append(f"{indent}- [{page['title'][:70]}]({page['url']})")
-
-            return [TextContent(type="text", text="\n".join(lines))]
-
-        elif name == "refresh_index":
-            global _index_cache, _index_cache_ts
-            _index_cache = None
-            _index_cache_ts = 0
-            index = await build_index()
-            return [TextContent(type="text", text=f"✅ 索引已刷新。共 {index['total_pages']} 篇文档，{len(index['catalogs'])} 个分类。")]
-
-        return [TextContent(type="text", text=f"未知工具：{name}")]
-
-    except Exception as e:
-        return [TextContent(type="text", text=f"错误：{type(e).__name__}: {str(e)}")]
-
-
-async def mcp_main():
-    """Run as MCP server (stdio)."""
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream, write_stream,
-            InitializationOptions(
-                server_name="huawei-docs",
-                server_version="2.1.0",
-                capabilities={"tools": {"listChanged": False}},
-            )
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLI Mode
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def print_json(data):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+# ── CLI Commands: Docs ────────────────────────────────────────────────────────
+
 async def cmd_index(args):
-    """显示所有文档分类索引"""
     index = await build_index()
     if args.json:
         print_json(index)
@@ -562,7 +342,6 @@ async def cmd_index(args):
 
 
 async def cmd_search(args):
-    """搜索文档"""
     index = await build_index()
     query_lower = args.query.lower()
     results = []
@@ -595,7 +374,6 @@ async def cmd_search(args):
 
 
 async def cmd_get(args):
-    """获取文档内容"""
     catalog, object_id = parse_doc_url(args.url)
     doc = await fetch_doc(object_id=object_id, catalog_name=catalog)
     content = extract_doc_content(doc)
@@ -609,7 +387,6 @@ async def cmd_get(args):
     print(f"URL:  {args.url}\n")
 
     body = content["content"]
-    # If --full, show everything; otherwise first 80 lines
     if args.full:
         print(body)
     else:
@@ -622,7 +399,6 @@ async def cmd_get(args):
 
 
 async def cmd_category(args):
-    """查看分类下的文档"""
     catalog_key = None
     for k, v in CATALOGS.items():
         if args.catalog == k or args.catalog == v or args.catalog in k or args.catalog in v:
@@ -649,28 +425,279 @@ async def cmd_category(args):
         print(f"{indent}  {page['url']}")
 
 
+# ── CLI Commands: Build & Deploy ──────────────────────────────────────────────
+
+async def cmd_build(args):
+    tool = HvigorTool(args.project)
+    if args.hvigor:
+        tool._hvigor_path = args.hvigor
+    else:
+        found = tool.detect(Config())
+        if not found:
+            print("[hmdev] ❌ 未找到 hvigorw。请安装 DevEco Studio 或使用 --hvigor 指定路径。")
+            print("   也可用配置文件指定路径: hmdev-cli config set hvigor.path \"<路径>\"")
+            return
+
+    result = tool.build(args.module, args.product)
+    hap_files = HvigorTool.find_hap(args.project, args.module)
+
+    if args.json:
+        print_json({
+            "success": result.returncode == 0,
+            "exit_code": result.returncode,
+            "hap_files": hap_files,
+        })
+        return
+
+    if result.returncode == 0:
+        print(f"\n[hmdev] ✅ 构建成功")
+        if hap_files:
+            print(f"   产物: {hap_files[0]}")
+        else:
+            print(f"   产物: 未找到 .hap 文件，请检查构建配置")
+    else:
+        print(f"\n[hmdev] ❌ 构建失败 (exit code: {result.returncode})")
+
+
+async def cmd_deploy(args):
+    hdc = HDCTool()
+    if not hdc.detect(Config()):
+        print("[hmdev] ❌ 未找到 hdc。请确保 DevEco Studio 已安装且 hdc 在 PATH 中。")
+        return
+
+    hap_path = args.hap
+    if not hap_path:
+        hap_files = HvigorTool.find_hap(".")
+        if not hap_files:
+            print("[hmdev] ❌ 未找到 HAP 文件。请使用 --hap 指定路径或先执行 build。")
+            return
+        hap_path = hap_files[0]
+        print(f"[hmdev] 自动选择最新构建产物: {hap_path}")
+
+    if args.tconn:
+        print(f"[hmdev] 无线连接: {args.tconn}")
+        tr = hdc.connect_wireless(args.tconn)
+        if tr.returncode != 0:
+            print(f"[hmdev] ❌ 无线连接失败: {tr.stderr.strip()}")
+            return
+        print(f"[hmdev] ✅ 无线连接成功")
+
+    device_id = args.device
+    if not device_id:
+        devices = hdc.list_devices()
+        if not devices:
+            print("[hmdev] ❌ 未检测到已连接的设备。请连接设备或使用 --device 指定。")
+            return
+        device_id = devices[0]["id"]
+        print(f"[hmdev] 自动选择设备: {device_id}")
+
+    print(f"[hmdev] 正在安装: {hap_path}")
+    ir = hdc.install_hap(hap_path, device_id)
+    if ir.returncode != 0:
+        err = ir.stderr.strip() or ir.stdout.strip()
+        print(f"[hmdev] ❌ 安装失败: {err}")
+        return
+    print(f"[hmdev] ✅ 安装成功")
+
+    app_started = False
+    if args.start:
+        bundle = args.bundle
+        if not bundle:
+            print("[hmdev] ⚠️ --start 需要 --bundle 参数，跳过启动")
+        else:
+            print(f"[hmdev] 正在启动: {bundle}")
+            sr = hdc.start_app(bundle, args.ability, device_id)
+            if sr.returncode != 0:
+                print(f"[hmdev] ❌ 启动失败: {sr.stderr.strip()}")
+            else:
+                print(f"[hmdev] ✅ 应用已启动")
+                app_started = True
+
+    if args.json:
+        print_json({
+            "success": True,
+            "device": device_id,
+            "hap": hap_path,
+            "app_started": app_started,
+        })
+
+
+async def cmd_devices(args):
+    hdc = HDCTool()
+    if not hdc.detect(Config()):
+        print("[hmdev] ❌ 未找到 hdc。请确保 DevEco Studio 已安装。")
+        return
+
+    devices = hdc.list_devices()
+    if args.json:
+        print_json({"devices": devices})
+        return
+
+    if not devices:
+        print("[hmdev] 未检测到已连接的设备。")
+        print("  请通过 USB 连接设备或在开发者选项中开启无线调试。")
+        return
+
+    print(f"[hmdev] 已连接设备 ({len(devices)}):\n")
+    for d in devices:
+        status_icon = "✅" if d["status"] == "device" else "❓"
+        print(f"  {status_icon}  {d['id']}  [{d['status']}]")
+
+
+async def cmd_run(args):
+    hdc = HDCTool()
+    if not hdc.detect(Config()):
+        print("[hmdev] ❌ 未找到 hdc。请确保 DevEco Studio 已安装。")
+        return
+
+    device_id = args.device
+    if not device_id:
+        devices = hdc.list_devices()
+        if not devices:
+            print("[hmdev] ❌ 未检测到已连接的设备。")
+            return
+        device_id = devices[0]["id"]
+        print(f"[hmdev] 自动选择设备: {device_id}")
+
+    print(f"[hmdev] 正在启动: {args.bundle} ({args.ability})")
+    sr = hdc.start_app(args.bundle, args.ability, device_id)
+
+    if args.json:
+        print_json({
+            "success": sr.returncode == 0,
+            "device": device_id,
+            "bundle": args.bundle,
+            "ability": args.ability,
+        })
+        return
+
+    if sr.returncode == 0:
+        print(f"[hmdev] ✅ 应用已启动")
+    else:
+        print(f"[hmdev] ❌ 启动失败: {sr.stderr.strip()}")
+
+
+async def cmd_connect(args):
+    hdc = HDCTool()
+    if not hdc.detect(Config()):
+        print("[hmdev] ❌ 未找到 hdc。请确保 DevEco Studio 已安装。")
+        return
+
+    address = args.address
+    print(f"[hmdev] 正在连接无线设备: {address}")
+    try:
+        result = hdc.connect_wireless(address)
+    except subprocess.TimeoutExpired:
+        if args.json:
+            print_json({"success": False, "address": address, "error": "连接超时"})
+            return
+        print(f"[hmdev] ❌ 连接超时: {address}")
+        print("   请确认:")
+        print("   1. 手机和电脑在同一局域网")
+        print("   2. 手机已开启「开发者选项 → 无线调试」")
+        print("   3. 地址格式为 IP:PORT（如 192.168.1.100:41015）")
+        return
+
+    if args.json:
+        print_json({
+            "success": result.returncode == 0,
+            "address": address,
+            "error": result.stderr.strip() if result.returncode != 0 else "",
+        })
+        return
+
+    if result.returncode == 0:
+        print(f"[hmdev] ✅ 连接成功: {address}")
+        devices = hdc.list_devices()
+        for d in devices:
+            if d["id"] == address or d["status"] == "device":
+                print(f"   设备: {d['id']} [{d['status']}]")
+    else:
+        err = result.stderr.strip() or result.stdout.strip()
+        print(f"[hmdev] ❌ 连接失败: {err}")
+        print("   请确认:")
+        print("   1. 手机和电脑在同一局域网")
+        print("   2. 手机已开启「开发者选项 → 无线调试」")
+        print("   3. 地址格式为 IP:PORT（如 192.168.1.100:41015）")
+
+
+# ── CLI Commands: Config ──────────────────────────────────────────────────────
+
+async def cmd_config(args):
+    cfg = Config()
+
+    if args.get:
+        key = args.get
+        val = cfg.get(key)
+        if val:
+            print(f"{key} = {val}")
+        else:
+            print(f"{key} 未设置")
+        return
+
+    if args.set:
+        key, value = args.set
+        try:
+            cfg.set(key, value)
+            print(f"[hmdev] ✅ 已设置 {key} = {value}")
+            print(f"   配置保存至: {Config.config_path()}")
+        except KeyError as e:
+            print(f"[hmdev] ❌ {e}")
+        return
+
+    if args.reset:
+        key = args.reset
+        try:
+            cfg.reset(key)
+            print(f"[hmdev] ✅ 已重置 {key}")
+        except KeyError as e:
+            print(f"[hmdev] ❌ {e}")
+        return
+
+    all_config = cfg.get_all()
+    print(f"hmdev-cli 配置 ({Config.config_path()})\n")
+    for key in sorted(all_config):
+        val = all_config[key]
+        help_text = Config.keys_help().get(key, "")
+        if val:
+            print(f"  {key} = {val}")
+        else:
+            print(f"  {key} = (未设置)")
+        if help_text:
+            print(f"    {help_text}")
+        print()
+
+
+# ── CLI Registration ──────────────────────────────────────────────────────────
+
 CLI_COMMANDS = {
     "index": cmd_index,
     "search": cmd_search,
     "get": cmd_get,
     "category": cmd_category,
-    "cat": cmd_category,  # alias
-    "mcp": None,  # handled separately
+    "cat": cmd_category,
+    "build": cmd_build,
+    "deploy": cmd_deploy,
+    "devices": cmd_devices,
+    "run": cmd_run,
+    "connect": cmd_connect,
+    "config": cmd_config,
 }
 
 
 def build_cli_parser():
     parser = ArgumentParser(
-        prog="huawei-docs",
-        description="华为 HarmonyOS 开发文档 CLI 工具",
+        prog="hmdev-cli",
+        description="HarmonyOS 开发 CLI 工具 — 文档查询、项目构建、设备部署",
         epilog="示例:\n"
-               "  huawei-docs index                    查看文档索引\n"
-               "  huawei-docs search ArkUI              搜索 ArkUI 相关文档\n"
-               "  huawei-docs get <URL>                 获取文档内容\n"
-               "  huawei-docs get --full <URL>          获取完整文档内容\n"
-               "  huawei-docs category harmonyos-guides 查看分类文档\n"
-               "  huawei-docs category --json 开发指南   查看分类文档 (JSON格式)\n"
-               "  huawei-docs mcp                       启动 MCP 服务器",
+               "  hmdev-cli index                       查看文档索引\n"
+               "  hmdev-cli search ArkUI                 搜索文档\n"
+               "  hmdev-cli get <URL>                    获取文档内容\n"
+               "  hmdev-cli build --project ./MyApp      构建 HAP\n"
+               "  hmdev-cli deploy --hap ./app.hap       部署到设备\n"
+               "  hmdev-cli devices                      列出设备\n"
+               "  hmdev-cli run --bundle com.example.app 启动应用\n"
+               "  hmdev-cli connect 192.168.1.100:41015  无线连接设备",
         formatter_class=RawDescriptionHelpFormatter,
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 格式输出")
@@ -697,8 +724,46 @@ def build_cli_parser():
     p.add_argument("catalog", help="分类名称（如 harmonyos-guides, 开发指南）")
     p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
 
-    # mcp
-    sub.add_parser("mcp", help="启动 MCP 服务器")
+    # build
+    p = sub.add_parser("build", help="构建 HarmonyOS HAP")
+    p.add_argument("--project", default=".", help="项目目录（默认当前目录）")
+    p.add_argument("--module", default="entry@default", help="模块名称（默认 entry@default）")
+    p.add_argument("--product", default="default", help="产品（默认 default）")
+    p.add_argument("--hvigor", help="hvigorw 路径（自动检测）")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # deploy
+    p = sub.add_parser("deploy", help="部署 HAP 到设备")
+    p.add_argument("--hap", help="HAP 文件路径（自动查找最新构建产物）")
+    p.add_argument("--device", help="设备 UDID 或无线地址（默认使用第一个设备）")
+    p.add_argument("--tconn", help="无线连接地址 (IP:PORT)")
+    p.add_argument("--start", action="store_true", help="安装后启动应用")
+    p.add_argument("--bundle", help="应用 Bundle 名称")
+    p.add_argument("--ability", default="EntryAbility", help="Ability 名称（默认 EntryAbility）")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # devices
+    p = sub.add_parser("devices", help="列出已连接设备")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # run
+    p = sub.add_parser("run", help="启动应用")
+    p.add_argument("--bundle", required=True, help="应用 Bundle 名称")
+    p.add_argument("--ability", default="EntryAbility", help="Ability 名称（默认 EntryAbility）")
+    p.add_argument("--device", help="设备 UDID 或无线地址（默认使用第一个设备）")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # connect
+    p = sub.add_parser("connect", help="无线连接设备 (hdc tconn)")
+    p.add_argument("address", help="设备无线调试地址 (IP:PORT)")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # config
+    p = sub.add_parser("config", help="查看或修改配置")
+    p.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"), help="设置配置项")
+    p.add_argument("--get", metavar="KEY", help="查看单个配置项")
+    p.add_argument("--reset", metavar="KEY", help="重置配置项")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
 
     return parser
 
@@ -707,8 +772,8 @@ async def cli_main():
     parser = build_cli_parser()
     args = parser.parse_args()
 
-    if args.command == "mcp" or args.command is None:
-        await mcp_main()
+    if args.command is None:
+        parser.print_help()
         return
 
     cmd_func = CLI_COMMANDS.get(args.command)
@@ -719,13 +784,4 @@ async def cli_main():
 
 
 if __name__ == "__main__":
-    # Heuristic: if any arg is -h/--help, or first non-program-name arg is a
-    # known CLI subcommand, run in CLI mode.  Otherwise default to MCP mode
-    # so existing tools (Claude Code, Command Code) keep working unchanged.
-    known_cli = {"index", "search", "get", "category", "cat", "mcp"}
-    args = sys.argv[1:]
-
-    if "-h" in args or "--help" in args or (args and args[0] in known_cli):
-        asyncio.run(cli_main())
-    else:
-        asyncio.run(mcp_main())
+    asyncio.run(cli_main())

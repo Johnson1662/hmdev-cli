@@ -1,32 +1,28 @@
 {
-  "name": "huawei-docs-mcp",
-  "version": "1.0.1",
-  "description": "华为 HarmonyOS 开发文档 CLI & MCP Server — 一行命令搜索、获取华为开发者文档，无需克隆仓库",
+  "name": "hmdev-cli",
+  "version": "1.0.2",
+  "description": "HarmonyOS 开发 CLI 工具 — 文档查询、项目构建、设备部署",
   "keywords": [
-    "huawei",
     "harmonyos",
     "hongmeng",
-    "mcp",
-    "mcp-server",
-    "docs",
-    "developer",
-    "claude-code",
-    "cursor",
-    "ai-tools"
+    "hmdev",
+    "cli",
+    "hvigor",
+    "hdc",
+    "huawei"
   ],
-  "homepage": "https://github.com/Johnson1662/huawei-docs-mcp#readme",
+  "homepage": "https://github.com/Johnson1662/hmdev-cli#readme",
   "bugs": {
-    "url": "https://github.com/Johnson1662/huawei-docs-mcp/issues"
+    "url": "https://github.com/Johnson1662/hmdev-cli/issues"
   },
   "license": "MIT",
   "author": "Johnson1662",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Johnson1662/huawei-docs-mcp.git"
+    "url": "git+https://github.com/Johnson1662/hmdev-cli.git"
   },
   "bin": {
-    "huawei-docs": "bin/huawei-docs.js",
-    "huawei-docs-mcp": "bin/huawei-docs-mcp.js"
+    "hmdev-cli": "bin/hmdev-cli.js"
   },
   "engines": {
     "node": ">=16.0.0"
@@ -39,6 +35,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node scripts/python-runner.js"
+    "postinstall": "node scripts/runner.js"
   }
 }
