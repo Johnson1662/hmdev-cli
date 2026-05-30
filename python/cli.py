@@ -16,6 +16,8 @@ Usage:
 import asyncio
 import json
 import re
+import shutil
+import subprocess
 import subprocess
 import time
 from argparse import ArgumentParser, RawDescriptionHelpFormatter, SUPPRESS
@@ -477,7 +479,7 @@ async def cmd_deploy(args):
     if args.tconn:
         print(f"[hmdev] 无线连接: {args.tconn}")
         tr = hdc.connect_wireless(args.tconn)
-        if tr.returncode != 0:
+        if not HDCTool.succeeded(tr):
             print(f"[hmdev] ❌ 无线连接失败: {tr.stderr.strip()}")
             return
         print(f"[hmdev] ✅ 无线连接成功")
@@ -493,7 +495,7 @@ async def cmd_deploy(args):
 
     print(f"[hmdev] 正在安装: {hap_path}")
     ir = hdc.install_hap(hap_path, device_id)
-    if ir.returncode != 0:
+    if not HDCTool.succeeded(ir):
         err = ir.stderr.strip() or ir.stdout.strip()
         print(f"[hmdev] ❌ 安装失败: {err}")
         return
@@ -507,7 +509,7 @@ async def cmd_deploy(args):
         else:
             print(f"[hmdev] 正在启动: {bundle}")
             sr = hdc.start_app(bundle, args.ability, device_id)
-            if sr.returncode != 0:
+            if not HDCTool.succeeded(sr):
                 print(f"[hmdev] ❌ 启动失败: {sr.stderr.strip()}")
             else:
                 print(f"[hmdev] ✅ 应用已启动")
@@ -668,6 +670,20 @@ async def cmd_config(args):
         print()
 
 
+async def cmd_update(args):
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm:
+        print("[hmdev] ❌ 未找到 npm。请确保 Node.js 已安装。")
+        return
+    print("[hmdev] 正在更新 hmdev-cli ...")
+    result = subprocess.run([npm, "update", "-g", "hmdev-cli"], capture_output=True, text=True)
+    if result.returncode == 0:
+        print("[hmdev] ✅ 更新成功")
+    else:
+        err = result.stderr.strip() or result.stdout.strip()
+        print(f"[hmdev] ❌ 更新失败: {err}")
+
+
 # ── CLI Registration ──────────────────────────────────────────────────────────
 
 CLI_COMMANDS = {
@@ -682,6 +698,7 @@ CLI_COMMANDS = {
     "run": cmd_run,
     "connect": cmd_connect,
     "config": cmd_config,
+    "update": cmd_update,
 }
 
 
@@ -763,6 +780,10 @@ def build_cli_parser():
     p.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"), help="设置配置项")
     p.add_argument("--get", metavar="KEY", help="查看单个配置项")
     p.add_argument("--reset", metavar="KEY", help="重置配置项")
+    p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
+
+    # update
+    p = sub.add_parser("update", help="更新 hmdev-cli 到最新版本 (npm update -g)")
     p.add_argument("--json", action="store_true", dest="json", help=SUPPRESS)
 
     return parser

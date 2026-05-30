@@ -193,6 +193,10 @@ class HDCTool:
             )
         return subprocess.run([self._hdc_path] + args, capture_output=True, text=True, timeout=timeout)
 
+    @staticmethod
+    def succeeded(result: subprocess.CompletedProcess) -> bool:
+        return result.returncode == 0 and "[Fail]" not in result.stdout and "[Fail]" not in result.stderr
+
     def list_devices(self) -> list[dict]:
         result = self._run(["list", "targets"])
         devices = []
@@ -221,5 +225,5 @@ class HDCTool:
         args.extend(["shell", "aa", "start", "-a", ability, "-b", bundle])
         return self._run(args, timeout=30)
 
-    def connect_wireless(self, ip_port: str, timeout: int = 10) -> subprocess.CompletedProcess:
+    def connect_wireless(self, ip_port: str, timeout: int = 30) -> subprocess.CompletedProcess:
         return self._run(["tconn", ip_port], timeout=timeout)
