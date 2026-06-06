@@ -515,11 +515,10 @@ async def cmd_search(args):
         return
 
     print(f"搜索结果: '{args.query}' (共 {len(scored)} 篇)\n")
-    for page in scored[:30]:
+    for i, page in enumerate(scored[:30], 1):
         cat = CATALOGS.get(page.get("catalog_name", ""), page.get("catalog_name", ""))
-        bar = "█" * min(int(page["_score"]), 10) + "░" * (10 - min(int(page["_score"]), 10))
-        print(f"  {bar}  [{cat}] {page['title']}")
-        print(f"           {page['url']}")
+        print(f"  [{i}] [{cat}] {page['title']}")
+        print(f"       {page['url']}")
     if len(scored) > 30:
         print(f"\n...及另外 {len(scored) - 30} 篇")
 
