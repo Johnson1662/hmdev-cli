@@ -102,8 +102,8 @@ async function ensurePython() {
     });
   } catch { /* non-fatal */ }
 
-  console.error(`${TAG} 正在安装 Python 依赖 (httpx)...`);
-  execSync(`"${getVenvPip()}" install httpx`, {
+  console.error(`${TAG} 正在安装 Python 依赖 (httpx, rapidfuzz, jieba)...`);
+  execSync(`"${getVenvPip()}" install httpx rapidfuzz jieba`, {
     stdio: 'pipe',
     timeout: 120000,
     env: cleanEnv,

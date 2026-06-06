@@ -25,6 +25,8 @@ from html.parser import HTMLParser
 from typing import Any
 
 import httpx
+from rapidfuzz import fuzz
+import jieba
 
 from builder import HvigorTool, HDCTool
 from config import Config
@@ -295,6 +297,67 @@ async def build_index() -> dict[str, Any]:
     return result
 
 
+# ── Search Ranking ─────────────────────────────────────────────────────────────
+
+def compute_relevance_score(query: str, title: str, object_id: str, catalog_name: str) -> float:
+    """
+    Compute a relevance score for a document against the query.
+
+    Combines:
+    - Exact substring/title/ID/category match (highest weight)
+    - Fuzzy string matching via rapidfuzz (partial_ratio, token_sort, token_set)
+    - Chinese word segmentation overlap via jieba (semantic-like matching)
+    - Word prefix bonus
+
+    Higher score = more relevant.
+    """
+    q = query.lower().strip()
+    t = title.lower()
+    o = object_id.lower()
+    c = catalog_name.lower()
+
+    score = 0.0
+
+    # ── 1. Exact match (strongest signal) ──
+    if t == q:
+        score += 5.0
+    elif t.startswith(q):
+        score += 4.0
+    elif q in t:
+        score += 3.0
+
+    if q in o:
+        score += 1.5
+    if q in c:
+        score += 0.5
+
+    # ── 2. Fuzzy match on title ──
+    score += (fuzz.partial_ratio(q, t) / 100.0) * 2.0
+    score += (fuzz.token_sort_ratio(q, t) / 100.0) * 1.5
+    score += (fuzz.token_set_ratio(q, t) / 100.0) * 1.0
+
+    # ── 3. Fuzzy match on object_id ──
+    score += (fuzz.partial_ratio(q, o) / 100.0) * 0.8
+
+    # ── 4. Word overlap via jieba (handles Chinese segmentation) ──
+    q_words = set(w for w in jieba.lcut(q) if w.strip())
+    t_words = set(w for w in jieba.lcut(t) if w.strip())
+    if q_words and t_words:
+        common = q_words & t_words
+        score += (len(common) / len(q_words)) * 2.0
+
+        # ── 5. Prefix match: query word is prefix of title word ──
+        for qw in q_words:
+            if len(qw) < 2:
+                continue
+            for tw in t_words:
+                if tw != qw and tw.startswith(qw):
+                    score += 0.5
+                    break
+
+    return score
+
+
 # ── CLI Helpers ────────────────────────────────────────────────────────────────
 
 def parse_doc_url(url: str) -> tuple[str, str]:
@@ -345,34 +408,58 @@ async def cmd_index(args):
 
 async def cmd_search(args):
     index = await build_index()
-    query_lower = args.query.lower()
-    results = []
-    seen = set()
-
-    for page in index.get("all_pages", []):
-        title = page.get("title", "").lower()
-        obj_id = page.get("object_id", "").lower()
-        if query_lower in title or query_lower in obj_id or query_lower in page.get("catalog_name", ""):
-            if page.get("url") not in seen:
-                seen.add(page["url"])
-                results.append(page)
-
-    if args.json:
-        print_json({"query": args.query, "total": len(results), "results": results[:50]})
+    query = args.query.strip()
+    if not query:
+        print("请提供搜索关键词。")
         return
 
-    if not results:
+    query_lower = query.lower()
+    seen = set()
+    scored = []
+
+    for page in index.get("all_pages", []):
+        title = page.get("title", "")
+        obj_id = page.get("object_id", "")
+        catalog = page.get("catalog_name", "")
+
+        score = compute_relevance_score(query, title, obj_id, catalog)
+
+        # Include if exact match exists or fuzzy score is significant
+        if (query_lower in title.lower()
+                or query_lower in obj_id.lower()
+                or query_lower in catalog.lower()
+                or score >= 1.5):
+            if page.get("url") not in seen:
+                seen.add(page["url"])
+                page = dict(page)
+                page["_score"] = round(score, 2)
+                scored.append(page)
+
+    # Sort: higher score first, shorter title as tiebreaker
+    scored.sort(key=lambda p: (-p["_score"], len(p.get("title", ""))))
+
+    if args.json:
+        out = {
+            "query": args.query,
+            "total": len(scored),
+            "results": scored[:50],
+        }
+        print_json(out)
+        return
+
+    if not scored:
         print(f"未找到与 '{args.query}' 相关的文档。")
         print(f"可用分类: {', '.join(f'{v}({k})' for k, v in CATALOGS.items())}")
         return
 
-    print(f"搜索结果: '{args.query}' (共 {len(results)} 篇)\n")
-    for page in results[:30]:
+    print(f"搜索结果: '{args.query}' (共 {len(scored)} 篇)\n")
+    for page in scored[:30]:
         cat = CATALOGS.get(page.get("catalog_name", ""), page.get("catalog_name", ""))
-        print(f"  [{cat}] {page['title']}")
-        print(f"         {page['url']}")
-    if len(results) > 30:
-        print(f"\n...及另外 {len(results) - 30} 篇")
+        bar = "█" * min(int(page["_score"]), 10) + "░" * (10 - min(int(page["_score"]), 10))
+        print(f"  {bar}  [{cat}] {page['title']}")
+        print(f"           {page['url']}")
+    if len(scored) > 30:
+        print(f"\n...及另外 {len(scored) - 30} 篇")
 
 
 async def cmd_get(args):
