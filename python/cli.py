@@ -299,15 +299,52 @@ async def build_index() -> dict[str, Any]:
 
 # ── Search Ranking ─────────────────────────────────────────────────────────────
 
+def _extract_terms(text: str) -> list[str]:
+    """Split query into deduplicated terms (whitespace + jieba segmentation)."""
+    raw = text.lower().strip()
+    terms = []
+    seen = set()
+    for part in raw.split():
+        for w in jieba.lcut(part):
+            w = w.strip()
+            if w and len(w) >= 1 and w not in seen:
+                seen.add(w)
+                terms.append(w)
+    return terms
+
+
+def _score_term(term: str, title: str, object_id: str, catalog: str) -> float:
+    """Score a single query term against a document."""
+    t = title.lower()
+    o = object_id.lower()
+    c = catalog.lower()
+    q = term.lower().strip()
+
+    s = 0.0
+
+    # Exact substring match
+    if t == q:
+        s += 3.0
+    elif q in t:
+        s += 2.0
+    if q in o:
+        s += 1.0
+    if q in c:
+        s += 0.3
+
+    # Fuzzy match
+    s += (fuzz.partial_ratio(q, t) / 100.0) * 1.5
+
+    return s
+
+
 def compute_relevance_score(query: str, title: str, object_id: str, catalog_name: str) -> float:
     """
     Compute a relevance score for a document against the query.
 
-    Combines:
-    - Exact substring/title/ID/category match (highest weight)
-    - Fuzzy string matching via rapidfuzz (partial_ratio, token_sort, token_set)
-    - Chinese word segmentation overlap via jieba (semantic-like matching)
-    - Word prefix bonus
+    For single-term queries: exact + fuzzy + word overlap scoring.
+    For multi-term  queries: per-term scoring + all-terms-matched bonus,
+    so "ArkUI 组件" ranks docs containing BOTH words above those with only one.
 
     Higher score = more relevant.
     """
@@ -318,7 +355,7 @@ def compute_relevance_score(query: str, title: str, object_id: str, catalog_name
 
     score = 0.0
 
-    # ── 1. Exact match (strongest signal) ──
+    # ── Phase 1: Whole-phrase matching (original behavior) ──
     if t == q:
         score += 5.0
     elif t.startswith(q):
@@ -331,29 +368,54 @@ def compute_relevance_score(query: str, title: str, object_id: str, catalog_name
     if q in c:
         score += 0.5
 
-    # ── 2. Fuzzy match on title ──
     score += (fuzz.partial_ratio(q, t) / 100.0) * 2.0
     score += (fuzz.token_sort_ratio(q, t) / 100.0) * 1.5
     score += (fuzz.token_set_ratio(q, t) / 100.0) * 1.0
-
-    # ── 3. Fuzzy match on object_id ──
     score += (fuzz.partial_ratio(q, o) / 100.0) * 0.8
 
-    # ── 4. Word overlap via jieba (handles Chinese segmentation) ──
-    q_words = set(w for w in jieba.lcut(q) if w.strip())
-    t_words = set(w for w in jieba.lcut(t) if w.strip())
-    if q_words and t_words:
-        common = q_words & t_words
-        score += (len(common) / len(q_words)) * 2.0
+    # ── Phase 2: Per-term scoring (multi-keyword support) ──
+    terms = _extract_terms(q)
+    if len(terms) <= 1:
+        q_words = set(terms)  # jieba single token
+        t_words = set(w for w in jieba.lcut(t) if w.strip())
+        if q_words and t_words:
+            common = q_words & t_words
+            score += (len(common) / len(q_words)) * 2.0
+            for qw in q_words:
+                if len(qw) < 2:
+                    continue
+                for tw in t_words:
+                    if tw != qw and tw.startswith(qw):
+                        score += 0.5
+                        break
+        return score
 
-        # ── 5. Prefix match: query word is prefix of title word ──
-        for qw in q_words:
-            if len(qw) < 2:
-                continue
-            for tw in t_words:
-                if tw != qw and tw.startswith(qw):
-                    score += 0.5
-                    break
+    # Multi-term: score each term individually
+    term_results = []
+    for term in terms:
+        ts = _score_term(term, title, object_id, catalog_name)
+        term_results.append(ts)
+
+    # Average term score + coverage bonus
+    avg_term = sum(term_results) / len(terms)
+    score += avg_term * 2.0
+
+    matched_any = sum(1 for ts in term_results if ts >= 1.0)
+    matched_title = sum(1 for ts in term_results if ts >= 2.0)
+
+    # Bonus when ALL query terms appear in the title
+    if len(terms) > 1 and matched_title >= len(terms):
+        score += 8.0
+    elif len(terms) > 1 and matched_any >= len(terms):
+        score += 5.0
+    elif matched_title >= 2:
+        score += 3.0
+    elif matched_any >= 2:
+        score += 1.5
+
+    # Coverage: fraction of terms that matched
+    coverage = matched_any / len(terms)
+    score += coverage * 2.0
 
     return score
 
