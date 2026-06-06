@@ -1,6 +1,6 @@
 {
   "name": "hmdev-cli",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "HarmonyOS 开发 CLI 工具 — 文档查询、项目构建、设备部署",
   "keywords": [
     "harmonyos",
